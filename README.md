@@ -45,7 +45,12 @@ OS Dependencies:
     uv --version
     ```
 
-How to run this script
+How to run this script (if downloaded)
 ```bash
 uv run photo-session-article-helper.py
+```
+
+How to run this script (from Github)
+```bash
+uv run https://raw.githubusercontent.com/brot/brand-images-tools/refs/heads/main/photo-session-article-helper.py
 ```

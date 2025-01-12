@@ -24,7 +24,6 @@ import openpyxl
 import pasteboard
 from exiftool import ExifToolHelper
 from rich.console import Console
-from rich.live import Live
 from rich.prompt import Prompt
 from rich.table import Table
 from watchdog.events import FileSystemEventHandler
@@ -42,6 +41,12 @@ class Article:
     color_name: str
     article_categorie: str
     position: str
+
+    def get_color(self):
+        return f"{self.color_name}_{self.color}"
+
+    def get_position(self):
+        return "vorne" if self.position == "v" else "hinten"
 
 
 class PhotoCreationHandler(FileSystemEventHandler):
@@ -104,17 +109,48 @@ def read_excel_data(excel_file: Path):
     return excel_data
 
 
-def read_article_data(excel_data) -> list[Article] | None:
-    arcticle_no = Prompt.ask("[bold]ArtikelNr").strip()
-    if not arcticle_no:
-        return
+def ask_for_article(excel_data) -> list[Article] | None:
+    while True:
+        CONSOLE.print("")
+        CONSOLE.print("=" * 80)
 
-    article = excel_data.get(arcticle_no)
-    if article is None:
-        CONSOLE.print(f"[light_pink3]ArtikelNr '{arcticle_no}' nicht gefunden.")
-        return
+        arcticle_no = Prompt.ask("[bold]ArtikelNr").strip()
+        if not arcticle_no:
+            return
 
-    return article
+        article = excel_data.get(arcticle_no)
+        if article is None:
+            CONSOLE.print(f"[light_pink3]ArtikelNr '{arcticle_no}' nicht gefunden.")
+            continue
+
+        return sorted(
+            article,
+            key=lambda a: (
+                a.article_no,
+                a.article_categorie,
+                a.article_desc,
+                a.collection,
+                int(a.color),
+            ),
+        )
+
+
+def ask_for_next_action() -> str:
+    while True:
+        choice = Prompt.ask(
+            "   Drücke [bold]w[/]iederholen oder [bold]n[/]ächster Artikel",
+            choices=["w", "n"],
+        )
+        return choice
+
+
+def ask_for_variation(article: Article) -> int:
+    while True:
+        choice = Prompt.ask(
+            "Nummer der Variation oder <ENTER> für alle",
+            choices=[str(i) for i in range(1, len(article) + 1)] + [""],
+        )
+        return choice
 
 
 def generate_new_filename(article: Article, watch_path: Path) -> str:
@@ -132,14 +168,15 @@ def generate_new_filename(article: Article, watch_path: Path) -> str:
 
 
 def set_clipboard_and_wait_for_photo(
-    pb: pasteboard.Pasteboard, article: Article, watch_path: Path
+    pb: pasteboard.Pasteboard, article: Article, variation_id: int, watch_path: Path
 ):
     filename = generate_new_filename(article, watch_path)
 
     # Set clipboard content
     pb.set_contents(filename)
     CONSOLE.print(
-        f"[green]Filename [bold]'{pb.get_contents()}'[/] in die Zwischenablage kopiert."
+        f"[green]{variation_id}. {article.get_color()} / {article.get_position()} - "
+        f"Filename [bold]'{pb.get_contents()}'[/] in die Zwischenablage kopiert.[/]"
     )
 
     # Set up file system observer
@@ -225,35 +262,42 @@ def parse_args():
     return args
 
 
-def print_article_variations(articles: list[Article], selected_line: int = 0) -> Table:
+def print_article_variations(articles: list[Article]) -> Table:
     table = Table(
+        "",
+        "ArtikelNr",
+        "Artikelart",
+        "Artikelbezechnung",
+        "Kollekion",
+        "Farbe",
+        "Position",
+        "Position",
         title=f"Artikel {articles[0].article_no} hat {len(articles)} Variationen",
-        row_styles=[
-            "bold" if row_index == selected_line else ""
-            for row_index in range(len(articles))
-        ],
     )
 
-    table.add_column("ArtikelNr")
-    table.add_column("Artikelart")
-    table.add_column("Artikelbezeichnung")
-    table.add_column("Kollektion")
-    table.add_column("Farbe")
-    table.add_column("Position")
-    table.add_column("Position")
-
-    for article in articles:
+    for i, article in enumerate(articles, start=1):
         table.add_row(
+            str(i),
             article.article_no,
             article.article_categorie,
             article.article_desc,
             article.collection,
-            f"{article.color} - {article.color_name}",
-            "vorne" if article.position == "v" else "hinten",
+            article.get_color(),
+            article.get_position(),
             article.position,
         )
 
-    return table
+    CONSOLE.print(table)
+
+
+def process_variation(
+    article: Article, variation_id: int | str, pb: pasteboard.Pasteboard, args
+):
+    while True:
+        set_clipboard_and_wait_for_photo(pb, article, variation_id, args.watch_path)
+        choice = ask_for_next_action()
+        if choice == "n":
+            break
 
 
 def main():
@@ -263,21 +307,19 @@ def main():
 
     try:
         while True:
-            CONSOLE.print("")
-            CONSOLE.print("=" * 80)
-            articles = read_article_data(excel_data)
+            articles = ask_for_article(excel_data)
             if articles is None:
                 break
 
-            with Live(
-                print_article_variations(articles),
-                auto_refresh=False,
-                console=CONSOLE,
-                transient=True,
-            ) as live:
-                for i, article in enumerate(articles):
-                    live.update(print_article_variations(articles, i), refresh=True)
-                    set_clipboard_and_wait_for_photo(pb, article, args.watch_path)
+            print_article_variations(articles)
+            variation_id = ask_for_variation(articles)
+            if not variation_id:
+                for i, article in enumerate(articles, start=1):
+                    process_variation(article, i, pb, args)
+            else:
+                article = articles[int(variation_id) - 1]
+                process_variation(article, variation_id, pb, args)
+
     except KeyboardInterrupt:
         ...
 

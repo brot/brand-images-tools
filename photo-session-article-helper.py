@@ -85,6 +85,7 @@ def read_excel_data(excel_file: Path):
             pos_back.value,
         )
 
+    print(f"- Anzahl an Artikeldaten im Excel: [dark_orange]{len(excel_data)}[/]")
     return excel_data
 
 
@@ -202,8 +203,8 @@ def parse_args():
     # Explicitly validate the watch_path whether it was provided or is using the default
     args.watch_path = valid_path(args.watch_path)
 
-    print(f"Lese die Artikeldaten von [dark_orange]'{args.excel_file.absolute()}'[/]")
-    print(f"Suche Fotos in [dark_orange]'{args.watch_path.absolute()}'[/]")
+    print(f"- Suche Fotos in [dark_orange]{args.watch_path.absolute()}[/]")
+    print(f"- Lese die Artikeldaten von [dark_orange]{args.excel_file.absolute()}[/]")
     return args
 
 

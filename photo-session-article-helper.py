@@ -14,17 +14,23 @@
 #   uv add --script photo-session-article-helper.py openpyxl pasteboard pyexiftool rich watchdog
 
 import argparse
+import itertools
 import threading
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import openpyxl
 import pasteboard
 from exiftool import ExifToolHelper
-from rich import print
+from rich.console import Console
+from rich.live import Live
 from rich.prompt import Prompt
-from watchdog.observers import Observer
+from rich.table import Table
 from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+CONSOLE = Console()
 
 
 @dataclass
@@ -35,8 +41,7 @@ class Article:
     color: str
     color_name: str
     article_categorie: str
-    pos_front: str
-    pos_back: str | None
+    position: str
 
 
 class PhotoCreationHandler(FileSystemEventHandler):
@@ -50,8 +55,9 @@ class PhotoCreationHandler(FileSystemEventHandler):
 
 
 def read_excel_data(excel_file: Path):
-    excel_data = {}
+    excel_data = defaultdict(list)
     found_header = False
+    article_variations = 0
 
     wb = openpyxl.load_workbook(excel_file)
     sheet = wb.active
@@ -74,64 +80,73 @@ def read_excel_data(excel_file: Path):
                 continue
 
         # read data
-        excel_data[article_no.value] = Article(
-            article_no.value,
-            article_desc.value,
-            collection.value,
-            color.value,
-            color_name.value,
-            article_categorie.value,
-            pos_front.value,
-            pos_back.value,
-        )
+        positions = ["v", "h"] if pos_back.value == "x" else ["v"]
+        for position in positions:
+            article_variations += 1
+            excel_data[article_no.value].append(
+                Article(
+                    article_no=article_no.value,
+                    article_desc=article_desc.value,
+                    article_categorie=article_categorie.value,
+                    collection=collection.value,
+                    color=color.value,
+                    color_name=color_name.value,
+                    position=position,
+                )
+            )
 
-    print(f"- Anzahl an Artikeldaten im Excel: [dark_orange]{len(excel_data)}[/]")
+    CONSOLE.print(
+        f"- Anzahl an Artikeldaten im Excel: [dark_orange]{len(excel_data)}[/]"
+    )
+    CONSOLE.print(
+        f"- Anzahl an Artikelvariationen im Excel: [dark_orange]{article_variations}[/]"
+    )
     return excel_data
 
 
-def read_article_data(excel_data) -> str | None:
+def read_article_data(excel_data) -> list[Article] | None:
     arcticle_no = Prompt.ask("[bold]ArtikelNr").strip()
     if not arcticle_no:
         return
 
     article = excel_data.get(arcticle_no)
     if article is None:
-        print(f"[light_pink3]ArtikelNr '{arcticle_no}' nicht gefunden.")
+        CONSOLE.print(f"[light_pink3]ArtikelNr '{arcticle_no}' nicht gefunden.")
         return
 
     return article
 
 
-def read_position():
-    while True:
-        position = Prompt.ask("[bold]Position (v/h)").strip().lower()
-        if not position:
-            return
+def generate_new_filename(article: Article, watch_path: Path) -> str:
+    article_desc = article.article_desc.replace(".", "").replace(" ", "_")
+    filename = (
+        f"{article.article_no}-{article.position}-{article.color}-{article_desc}.jpg"
+    )
 
-        if position not in ["v", "h"]:
-            print("[light_pink3]Ungültige Position. Bitte 'v' oder 'h' eingeben.")
-            continue
+    for i in itertools.count(1):
+        if not (watch_path / filename).exists():
+            break
+        filename = f"{article.article_no}-{article.position}-{article.color}-{article_desc}-{i}.jpg"
 
-        return position
+    return filename
 
 
 def set_clipboard_and_wait_for_photo(
-    pb: pasteboard.Pasteboard, article: Article, position: str, watch_path: Path
+    pb: pasteboard.Pasteboard, article: Article, watch_path: Path
 ):
-    article_desc = article.article_desc.replace(".", "").replace(" ", "_")
-    filename = f"{article.article_no}-{position}-{article.color}-{article_desc}.jpg"
+    filename = generate_new_filename(article, watch_path)
+
+    # Set clipboard content
+    pb.set_contents(filename)
+    CONSOLE.print(
+        f"[green]Filename [bold]'{pb.get_contents()}'[/] in die Zwischenablage kopiert."
+    )
 
     # Set up file system observer
     event_handler = PhotoCreationHandler(filename)
     observer = Observer()
     observer.schedule(event_handler, str(watch_path), recursive=False)
     observer.start()
-
-    # Set clipboard content
-    pb.set_contents(filename)
-    print(
-        f"[green]Filename [bold]'{pb.get_contents()}'[/] in die Zwischenablage kopiert."
-    )
 
     # Wait for file creation or timeout
     try:
@@ -142,7 +157,7 @@ def set_clipboard_and_wait_for_photo(
                     watch_path / filename,
                     {
                         "IPTC:ObjectName": article.article_no,
-                        "IPTC:Category": position,
+                        "IPTC:Category": article.position,
                         "IPTC:Caption-Abstract": article.article_desc,
                         "IPTC:Headline": article.color,
                     },
@@ -203,9 +218,42 @@ def parse_args():
     # Explicitly validate the watch_path whether it was provided or is using the default
     args.watch_path = valid_path(args.watch_path)
 
-    print(f"- Suche Fotos in [dark_orange]{args.watch_path.absolute()}[/]")
-    print(f"- Lese die Artikeldaten von [dark_orange]{args.excel_file.absolute()}[/]")
+    CONSOLE.print(f"- Suche Fotos in [dark_orange]{args.watch_path.absolute()}[/]")
+    CONSOLE.print(
+        f"- Lese die Artikeldaten von [dark_orange]{args.excel_file.absolute()}[/]"
+    )
     return args
+
+
+def print_article_variations(articles: list[Article], selected_line: int = 0) -> Table:
+    table = Table(
+        title=f"Artikel {articles[0].article_no} hat {len(articles)} Variationen",
+        row_styles=[
+            "bold" if row_index == selected_line else ""
+            for row_index in range(len(articles))
+        ],
+    )
+
+    table.add_column("ArtikelNr")
+    table.add_column("Artikelart")
+    table.add_column("Artikelbezeichnung")
+    table.add_column("Kollektion")
+    table.add_column("Farbe")
+    table.add_column("Position")
+    table.add_column("Position")
+
+    for article in articles:
+        table.add_row(
+            article.article_no,
+            article.article_categorie,
+            article.article_desc,
+            article.collection,
+            f"{article.color} - {article.color_name}",
+            "vorne" if article.position == "v" else "hinten",
+            article.position,
+        )
+
+    return table
 
 
 def main():
@@ -215,23 +263,26 @@ def main():
 
     try:
         while True:
-            print("")
-            print("=" * 80)
-            article = read_article_data(excel_data)
-            if article is None:
+            CONSOLE.print("")
+            CONSOLE.print("=" * 80)
+            articles = read_article_data(excel_data)
+            if articles is None:
                 break
 
-            position = read_position()
-            if position is None:
-                break
-
-            set_clipboard_and_wait_for_photo(pb, article, position, args.watch_path)
-
+            with Live(
+                print_article_variations(articles),
+                auto_refresh=False,
+                console=CONSOLE,
+                transient=True,
+            ) as live:
+                for i, article in enumerate(articles):
+                    live.update(print_article_variations(articles, i), refresh=True)
+                    set_clipboard_and_wait_for_photo(pb, article, args.watch_path)
     except KeyboardInterrupt:
         ...
 
 
 if __name__ == "__main__":
-    print("\nStarte Foto Session")
+    CONSOLE.print("\nStarte Foto Session")
     main()
-    print("\nEnde der Foto Session")
+    CONSOLE.print("\nEnde der Foto Session")

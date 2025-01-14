@@ -16,13 +16,13 @@
 import argparse
 import itertools
 import threading
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import openpyxl
 import pasteboard
 from exiftool import ExifToolHelper
+from exiftool.exceptions import ExifToolExecuteException
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
@@ -30,23 +30,16 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 CONSOLE = Console()
+FILE_EXTENSION = ".nef"
 
 
 @dataclass
 class Article:
-    article_no: str
-    article_desc: str
-    collection: str
-    color: str
-    color_name: str
-    article_categorie: str
-    position: str
-
-    def get_color(self):
-        return f"{self.color_name}_{self.color}"
-
-    def get_position(self):
-        return "vorne" if self.position == "v" else "hinten"
+    identity_no: str  # Identnummer
+    sheet: str  # Tabellenblatt
+    article_no: str  # ArtikelNr
+    article_desc: str  # Artikelbezeichnung
+    color_no: str  # Farbe
 
 
 class PhotoCreationHandler(FileSystemEventHandler):
@@ -59,23 +52,14 @@ class PhotoCreationHandler(FileSystemEventHandler):
             self.file_created.set()
 
 
-def read_excel_data(excel_file: Path):
-    excel_data = defaultdict(list)
+def read_excel_data(excel_file: Path) -> dict[str, Article]:
+    excel_data = {}
     found_header = False
-    article_variations = 0
 
     wb = openpyxl.load_workbook(excel_file)
     sheet = wb.active
-    for (
-        collection,
-        article_no,
-        article_desc,
-        color,
-        color_name,
-        article_categorie,
-        pos_front,
-        pos_back,
-    ) in sheet.rows:
+
+    for sheet, identity_no, article_no, color_no, article_desc in sheet.rows:
         # ignore lines without data (header, heading, empty lines)
         if not found_header:
             if article_no.value is None:
@@ -84,103 +68,91 @@ def read_excel_data(excel_file: Path):
                 found_header = True
                 continue
 
+        if identity_no.value in excel_data:
+            raise ValueError(f"Identnummer '{article_no.value}' ist doppelt vorhanden!")
+
         # read data
-        positions = ["v", "h"] if pos_back.value == "x" else ["v"]
-        for position in positions:
-            article_variations += 1
-            excel_data[article_no.value].append(
-                Article(
-                    article_no=article_no.value,
-                    article_desc=article_desc.value,
-                    article_categorie=article_categorie.value,
-                    collection=collection.value,
-                    color=color.value,
-                    color_name=color_name.value,
-                    position=position,
-                )
-            )
+        excel_data[identity_no.value] = Article(
+            sheet=sheet.value,
+            identity_no=identity_no.value,
+            article_no=article_no.value,
+            color_no=color_no.value,
+            article_desc=article_desc.value,
+        )
 
     CONSOLE.print(
         f"- Anzahl an Artikeldaten im Excel: [dark_orange]{len(excel_data)}[/]"
     )
-    CONSOLE.print(
-        f"- Anzahl an Artikelvariationen im Excel: [dark_orange]{article_variations}[/]"
-    )
     return excel_data
 
 
-def ask_for_article(excel_data) -> list[Article] | None:
+def ask_for_article_by_identity_no(excel_data) -> Article | None:
     while True:
         CONSOLE.print("")
         CONSOLE.print("=" * 80)
 
-        arcticle_no = Prompt.ask("[bold]ArtikelNr").strip()
-        if not arcticle_no:
+        identity_no = Prompt.ask("[bold]Identnummer").strip()
+        if not identity_no:
             return
 
-        article = excel_data.get(arcticle_no)
+        article = excel_data.get(identity_no)
         if article is None:
-            CONSOLE.print(f"[light_pink3]ArtikelNr '{arcticle_no}' nicht gefunden.")
+            CONSOLE.print(f"[light_pink3]Identnummer '{identity_no}' nicht gefunden.")
             continue
 
-        return sorted(
-            article,
-            key=lambda a: (
-                a.article_no,
-                a.article_categorie,
-                a.article_desc,
-                a.collection,
-                int(a.color),
-            ),
-        )
+        return article
 
 
 def ask_for_next_action() -> str:
     while True:
         choice = Prompt.ask(
-            "   Drücke [bold]w[/]iederholen oder [bold]n[/]ächster Artikel",
+            "Drücke [bold]w[/]iederholen oder [bold]n[/]ächster Artikel",
             choices=["w", "n"],
         )
         return choice
 
 
-def ask_for_variation(article: Article) -> int:
-    while True:
-        choice = Prompt.ask(
-            "Nummer der Variation oder <ENTER> für alle",
-            choices=[str(i) for i in range(1, len(article) + 1)] + [""],
-        )
-        return choice
+def ask_for_side() -> str:
+    return Prompt.ask("Vorder- oder Rückseite?", choices=["v", "r"])
 
 
-def generate_new_filename(article: Article, watch_path: Path) -> str:
-    article_desc = article.article_desc.replace(".", "").replace(" ", "_")
-    filename = (
-        f"{article.article_no}-{article.position}-{article.color}-{article_desc}.jpg"
-    )
+def generate_new_filename(article: Article, side: str, watch_path: Path) -> Path:
+    article_desc = article.article_desc.replace(".", "").replace(" ", "-")
+
+    filename_template = "{article_no}_{color_no}_{article_desc}_{side}"
+    filename_parts = {
+        "article_no": article.article_no,
+        "color_no": article.color_no,
+        "article_desc": article_desc,
+        "side": side,
+    }
+    filename = filename_template.format(**filename_parts)
 
     for i in itertools.count(1):
+        filename = Path(filename).with_suffix(FILE_EXTENSION)
         if not (watch_path / filename).exists():
             break
-        filename = f"{article.article_no}-{article.position}-{article.color}-{article_desc}-{i}.jpg"
+
+        # if file already exists, add counter (starting with 1) ad the end of the filename
+        filename = f"{filename_template}_{i}".format(**filename_parts)
 
     return filename
 
 
 def set_clipboard_and_wait_for_photo(
-    pb: pasteboard.Pasteboard, article: Article, variation_id: int, watch_path: Path
+    pb: pasteboard.Pasteboard, article: Article, watch_path: Path
 ):
-    filename = generate_new_filename(article, watch_path)
+    side = ask_for_side()
+    filename = generate_new_filename(article, side, watch_path)
 
     # Set clipboard content
-    pb.set_contents(filename)
+    pb.set_contents(filename.stem)
     CONSOLE.print(
-        f"[green]{variation_id}. {article.get_color()} / {article.get_position()} - "
-        f"Filename [bold]'{pb.get_contents()}'[/] in die Zwischenablage kopiert.[/]"
+        f"[green]Filename [bold]'{pb.get_contents()}'[/] in die Zwischenablage kopiert.[/]"
     )
 
     # Set up file system observer
-    event_handler = PhotoCreationHandler(filename)
+    event_handler = PhotoCreationHandler(str(filename))
     observer = Observer()
     observer.schedule(event_handler, str(watch_path), recursive=False)
     observer.start()
@@ -189,19 +161,51 @@ def set_clipboard_and_wait_for_photo(
     try:
         result = event_handler.file_created.wait()
         if result:
-            with ExifToolHelper() as et:
-                et.set_tags(
-                    watch_path / filename,
-                    {
-                        "IPTC:ObjectName": article.article_no,
-                        "IPTC:Category": article.position,
-                        "IPTC:Caption-Abstract": article.article_desc,
-                        "IPTC:Headline": article.color,
-                    },
+            try:
+                with ExifToolHelper() as et:
+                    et.set_tags(
+                        watch_path / filename,
+                        {
+                            "IPTC:ObjectName": article.article_no,
+                            "IPTC:Category": side,
+                            "IPTC:Caption-Abstract": article.article_desc,
+                            "IPTC:Headline": article.color_no,
+                        },
+                    )
+                CONSOLE.print(
+                    f"[green]IPTC Daten von [bold]'{filename}'[/] erfolgreich aktualisiert[/]"
                 )
+            except ExifToolExecuteException as except_inst:
+                CONSOLE.print(f"[light_pink3]{except_inst.stderr}[/]")
     finally:
         observer.stop()
         observer.join()
+
+
+def print_article_info(article: Article) -> None:
+    table = Table(
+        "Identnummer",
+        "ArtikelNr",
+        "Farbe",
+        "Artikelbezechnung",
+    )
+
+    table.add_row(
+        article.identity_no,
+        article.article_no,
+        article.color_no,
+        article.article_desc,
+    )
+
+    CONSOLE.print(table)
+
+
+def process_article(article: Article, pb: pasteboard.Pasteboard, watch_path: Path):
+    while True:
+        set_clipboard_and_wait_for_photo(pb, article, watch_path)
+        choice = ask_for_next_action()
+        if choice == "n":
+            break
 
 
 def valid_path(path_str: str) -> Path:
@@ -262,44 +266,6 @@ def parse_args():
     return args
 
 
-def print_article_variations(articles: list[Article]) -> Table:
-    table = Table(
-        "",
-        "ArtikelNr",
-        "Artikelart",
-        "Artikelbezechnung",
-        "Kollekion",
-        "Farbe",
-        "Position",
-        "Position",
-        title=f"Artikel {articles[0].article_no} hat {len(articles)} Variationen",
-    )
-
-    for i, article in enumerate(articles, start=1):
-        table.add_row(
-            str(i),
-            article.article_no,
-            article.article_categorie,
-            article.article_desc,
-            article.collection,
-            article.get_color(),
-            article.get_position(),
-            article.position,
-        )
-
-    CONSOLE.print(table)
-
-
-def process_variation(
-    article: Article, variation_id: int | str, pb: pasteboard.Pasteboard, args
-):
-    while True:
-        set_clipboard_and_wait_for_photo(pb, article, variation_id, args.watch_path)
-        choice = ask_for_next_action()
-        if choice == "n":
-            break
-
-
 def main():
     args = parse_args()
     excel_data = read_excel_data(args.excel_file)
@@ -307,18 +273,12 @@ def main():
 
     try:
         while True:
-            articles = ask_for_article(excel_data)
-            if articles is None:
+            article = ask_for_article_by_identity_no(excel_data)
+            if article is None:
                 break
 
-            print_article_variations(articles)
-            variation_id = ask_for_variation(articles)
-            if not variation_id:
-                for i, article in enumerate(articles, start=1):
-                    process_variation(article, i, pb, args)
-            else:
-                article = articles[int(variation_id) - 1]
-                process_variation(article, variation_id, pb, args)
+            print_article_info(article)
+            process_article(article, pb, args.watch_path)
 
     except KeyboardInterrupt:
         ...
@@ -326,5 +286,8 @@ def main():
 
 if __name__ == "__main__":
     CONSOLE.print("\nStarte Foto Session")
+    CONSOLE.print(
+        f"- Unterstützes bzw. erwartetes Dateiformat: [dark_orange]{FILE_EXTENSION}[/]"
+    )
     main()
     CONSOLE.print("\nEnde der Foto Session")

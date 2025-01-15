@@ -30,7 +30,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 CONSOLE = Console()
-FILE_EXTENSION = ".nef"
+FILE_EXTENSION = ".NEF"
 
 
 @dataclass

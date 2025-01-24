@@ -89,7 +89,7 @@ def read_excel_data(excel_file: Path) -> dict[str, Article]:
 def ask_for_article_by_identity_no(excel_data) -> Article | None:
     while True:
         CONSOLE.print("")
-        CONSOLE.print("=" * 80)
+        CONSOLE.print("=" * 70)
 
         identity_no = Prompt.ask("[bold]Identnummer").strip()
         if not identity_no:
@@ -148,7 +148,7 @@ def set_clipboard_and_wait_for_photo(
     # Set clipboard content
     pb.set_contents(filename.stem)
     CONSOLE.print(
-        f"[green]Filename [bold]'{pb.get_contents()}'[/] in die Zwischenablage kopiert.[/]"
+        f"[green]Filename [bold]'{pb.get_contents()}'[/][/]"
     )
 
     # Set up file system observer

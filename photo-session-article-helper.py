@@ -54,19 +54,16 @@ class PhotoCreationHandler(FileSystemEventHandler):
 
 def read_excel_data(excel_file: Path) -> dict[str, Article]:
     excel_data = {}
-    found_header = False
 
     wb = openpyxl.load_workbook(excel_file)
     sheet = wb.active
 
     for sheet, identity_no, article_no, color_no, article_desc in sheet.rows:
         # ignore lines without data (header, heading, empty lines)
-        if not found_header:
-            if article_no.value is None:
-                continue
-            elif article_no.value == "ArtikelNr":
-                found_header = True
-                continue
+        if article_no.value is None:
+            continue
+        if article_no.value == "ArtikelNr":
+            continue
 
         if identity_no.value in excel_data:
             raise ValueError(f"Identnummer '{article_no.value}' ist doppelt vorhanden!")

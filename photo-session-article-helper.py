@@ -69,12 +69,12 @@ def read_excel_data(excel_file: Path) -> dict[str, Article]:
             raise ValueError(f"Identnummer '{article_no.value}' ist doppelt vorhanden!")
 
         # read data
-        excel_data[identity_no.value] = Article(
-            sheet=sheet.value,
-            identity_no=identity_no.value,
-            article_no=article_no.value,
-            color_no=color_no.value,
-            article_desc=article_desc.value,
+        excel_data[str(identity_no.value)] = Article(
+            sheet=str(sheet.value),
+            identity_no=str(identity_no.value),
+            article_no=str(article_no.value),
+            color_no=str(color_no.value),
+            article_desc=str(article_desc.value),
         )
 
     CONSOLE.print(
